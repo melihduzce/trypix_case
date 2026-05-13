@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+*.pyc
+
+# Environment
+.env
+
+# Database
+*.db
+
+# Node / Dashboard
+node_modules/
+dashboard/dist/
+dashboard/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Render
+.render/
