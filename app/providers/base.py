@@ -1,7 +1,8 @@
 """
-Abstract base class for all image generation providers.
-Adding a new provider only requires implementing this interface —
-no changes needed in routing or health-tracking logic.
+Tüm görsel üretim sağlayıcıları için soyut temel sınıf (abstract base class).
+Yeni bir sağlayıcı eklemek için sadece bu arayüzü implemente etmek yeterli —
+routing veya sağlık takibi (health tracking) mantığında hiçbir değişiklik yapmaya gerek yok.
+
 """
 
 from abc import ABC, abstractmethod
@@ -72,10 +73,10 @@ class ProviderAuthError(ProviderError):
 
 class BaseProvider(ABC):
     """
-    Unified interface for all image generation providers.
+    Tüm görsel üretim sağlayıcıları için birleşik (tek tip) arayüz.
 
-    Each concrete provider implements this interface, hiding its specific
-    async pattern (polling, webhook, synchronous) from the routing layer.
+    Her somut sağlayıcı bu arayüzü implemente eder. Böylece kendine özel async çalışma şeklini (polling, webhook, senkron)
+    routing katmanından gizlemiş olur.
     """
 
     def __init__(self, name: str, api_key: str, timeout_seconds: float = 120.0):
@@ -86,26 +87,33 @@ class BaseProvider(ABC):
     @abstractmethod
     async def generate(self, request: GenerationRequest) -> GenerationResult:
         """
-        Submit a generation request and return a completed result.
+        Bir üretim isteği gönderir ve tamamlanmış sonucu döndürür.
 
-        Implementations must handle their own async pattern internally:
-        - Polling providers: submit + poll until done
-        - Webhook providers: submit + wait for callback
-        - Synchronous providers: submit + await response
+        Her sağlayıcı kendi async çalışma şeklini içeride halletmek zorundadır:
 
-        Raises:
-            ProviderRateLimitError: on 429 responses
-            ProviderTimeoutError: when timeout_seconds exceeded
-            ProviderAuthError: on 401/403 responses
-            ProviderError: on other failures
+        Polling yapan sağlayıcılar: isteği gönder + bitene kadar durumu sorgula
+
+        Webhook kullanan sağlayıcılar: isteği gönder + geri dönüşü bekle
+
+        Senkron çalışan sağlayıcılar: isteği gönder + cevabı bekle
+
+        Hata durumları (fırlattığı exception'lar):
+
+        ProviderRateLimitError: 429 (rate limit) cevabı geldiğinde
+
+        ProviderTimeoutError: timeout süresi aşıldığında
+
+        ProviderAuthError: 401/403 (yetkilendirme hatası) cevabı geldiğinde
+
+        ProviderError: diğer tüm hatalarda
         """
         ...
 
     @abstractmethod
     async def health_check(self) -> bool:
         """
-        Lightweight check to verify the provider is reachable.
-        Returns True if healthy, False otherwise.
+        Sağlayıcıya erişilip erişilemediğini kontrol eden hafif bir sağlık kontrolü.
+        Eğer sağlıklıysa True, değilse False döner.
         """
         ...
 

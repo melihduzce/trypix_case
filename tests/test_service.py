@@ -1,11 +1,15 @@
 """
-Test suite for TRYPIX Multi-Provider Generation Service.
+TRYPIX Çoklu Sağlayıcılı Üretim Servisi için test takımı.
 
-Covers all required scenarios:
-  1. Successful primary call
-  2. Primary failure with secondary fallback
-  3. Health-triggered demotion of a provider
-  4. Operator override taking a provider out of rotation
+Gereksinim duyulan tüm senaryoları kapsar:
+
+Birincil sağlayıcının başarılı çağrılması
+
+Birincil sağlayıcı hatasında ikinciye geçiş (fallback)
+
+Sağlık durumu eşik değerine ulaşınca sağlayıcının devreden çıkarılması (demotion)
+
+Operatör müdahalesi ile bir sağlayıcının rotasyondan alınması
 """
 
 import asyncio
@@ -61,8 +65,8 @@ def make_engine(providers, db_path=":memory:") -> tuple[RoutingEngine, HealthTra
 @pytest.mark.asyncio
 async def test_successful_primary_call():
     """
-    When the primary provider succeeds, the result should come from
-    the primary and health_tracker should record a success.
+    Birincil sağlayıcı başarılı olduğunda, sonuç birincil sağlayıcıdan gelmeli ve
+    health_tracker bu çağrıyı başarılı olarak kaydetmeli.
     """
     primary = make_mock_provider("fal", success=True, latency_ms=300.0)
     secondary = make_mock_provider("openrouter", success=True, latency_ms=500.0)
@@ -90,8 +94,8 @@ async def test_successful_primary_call():
 @pytest.mark.asyncio
 async def test_primary_failure_fallback_to_secondary():
     """
-    When the primary provider fails with a retryable error, the service
-    should transparently fall back to the secondary provider.
+    Birincil sağlayıcı tekrar denenebilir bir hatayla başarısız olduğunda, servis
+    gözle görülür bir şekilde ikincil sağlayıcıya geçiş yapmalı (failover).
     """
     primary = make_mock_provider("fal", success=False)
     secondary = make_mock_provider("openrouter", success=True, latency_ms=800.0)
@@ -122,9 +126,8 @@ async def test_primary_failure_fallback_to_secondary():
 @pytest.mark.asyncio
 async def test_health_triggered_demotion():
     """
-    When a provider accumulates enough failures to breach CONSECUTIVE_FAIL_LIMIT,
-    the health tracker should mark it as CIRCUIT_OPEN and the routing engine
-    should skip it.
+    Bir sağlayıcı, ardışık hata limitini (CONSECUTIVE_FAIL_LIMIT) aşacak kadar hata topladığında,
+    health tracker onu CIRCUIT_OPEN olarak işaretlemeli ve routing engine onu atlamalı.
     """
     tracker = HealthTracker()
 
@@ -159,8 +162,8 @@ async def test_health_triggered_demotion():
 @pytest.mark.asyncio
 async def test_operator_override_takes_provider_out_of_rotation():
     """
-    When an operator disables a provider, all subsequent requests should
-    route to other providers, even if the disabled provider is healthy.
+    Bir operatör bir sağlayıcıyı devre dışı bıraktığında, sonraki tüm istekler
+    devre dışı bırakılan sağlayıcı sağlıklı olsa bile diğer sağlayıcılara yönlenmeli.
     """
     primary = make_mock_provider("fal", success=True)
     secondary = make_mock_provider("openrouter", success=True)
@@ -200,8 +203,8 @@ async def test_operator_override_takes_provider_out_of_rotation():
 @pytest.mark.asyncio
 async def test_all_providers_unavailable():
     """
-    When all providers are circuit-open or disabled, the service should
-    return a FAILED result (not raise an exception).
+    Tüm sağlayıcılar devresi açık (circuit-open) veya devre dışı (disabled) olduğunda, servis
+    exception fırlatmak yerine FAILED sonucu döndürmeli.
     """
     tracker = HealthTracker()
 
@@ -230,8 +233,8 @@ async def test_all_providers_unavailable():
 @pytest.mark.asyncio
 async def test_rate_limit_triggers_failover():
     """
-    A 429 rate-limit error from the primary should trigger failover
-    to the secondary provider.
+    Birincil sağlayıcıdan gelen 429 rate-limit hatası, ikincil sağlayıcıya
+    failover'ı tetiklemeli.
     """
     primary = MagicMock(spec=BaseProvider)
     primary.name = "fal"
@@ -257,8 +260,8 @@ async def test_rate_limit_triggers_failover():
 @pytest.mark.asyncio
 async def test_auth_error_does_not_failover():
     """
-    Auth errors indicate misconfiguration, not transient failures.
-    The service should not failover on auth errors.
+    Yetkilendirme (auth) hataları yanlış yapılandırmayı gösterir, geçici bir başarısızlık değildir.
+    Servis, auth hatalarında failover yapmamalı.
     """
     primary = MagicMock(spec=BaseProvider)
     primary.name = "fal"
@@ -284,8 +287,8 @@ async def test_auth_error_does_not_failover():
 
 def test_health_tracker_sliding_window():
     """
-    The sliding window should only consider outcomes within WINDOW_SECONDS.
-    Old failures should not affect current health.
+    Kayan pencere (sliding window), yalnızca WINDOW_SECONDS içindeki sonuçları dikkate almalı.
+    Eski hatalar mevcut sağlık durumunu etkilememeli.
     """
     tracker = HealthTracker()
 

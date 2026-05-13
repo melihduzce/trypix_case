@@ -1,6 +1,6 @@
 """
-Event Store — Persists all routing decisions and generation outcomes.
-Uses SQLite for simplicity and deploy-friendliness.
+Event Store (Olay Deposu) — Tüm routing kararlarını ve üretim sonuçlarını kaydeder (kalıcı olarak saklar).
+Basit olması ve deploy etmesi kolay olduğu için SQLite kullanır.
 """
 
 import time

@@ -1,6 +1,6 @@
 """
-TRYPIX Multi-Provider Generation Service
-Main FastAPI application entry point.
+TRYPIX Çoklu Sağlayıcılı Üretim Servisi
+FastAPI uygulamasının ana giriş noktası.
 """
 
 import logging
@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
     logger.info("[shutdown] Done")
 
 
-# ── App ───────────────────────────────────────────────────────────────────
+#App
 
 app = FastAPI(
     title="TRYPIX Multi-Provider Generation Service",

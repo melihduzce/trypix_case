@@ -1,10 +1,13 @@
 """
-FAL.ai Provider — Polling-based async pattern.
+FAL.ai Sağlayıcısı — Polling tabanlı async çalışma şekli.
 
-Flow:
-  1. POST https://queue.fal.run/fal-ai/flux/schnell  → returns request_id + status_url + response_url
-  2. GET {status_url}   → poll until status == COMPLETED
-  3. GET {response_url} → fetch final result with image URLs
+Akış şöyle işliyor:
+
+POST isteği atılır https://queue.fal.run/fal-ai/flux/schnell adresine → geriye request_id, status_url ve response_url döner
+
+GET isteği atılır {status_url} adresine → durum COMPLETED olana kadar poll'lanır (sorgulanır)
+
+GET isteği atılır {response_url} adresine → görsel URL'lerini içeren nihai sonuç alınır
 """
 
 import asyncio

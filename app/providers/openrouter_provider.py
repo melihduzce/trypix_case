@@ -1,8 +1,9 @@
 """
-OpenRouter Provider — Synchronous via Chat Completions with image modality.
+OpenRouter Sağlayıcısı — Görsel modality'si ile Chat Completions üzerinden senkron çalışır.
 
-Flow:
-  POST /api/v1/chat/completions with modalities=["image","text"] → returns base64 image
+Akış şöyle işliyor:
+
+POST /api/v1/chat/completions isteği atılır, modalities=["image","text"] parametresiyle birlikte → geriye base64 formatında görsel döner
 """
 
 import time

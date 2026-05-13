@@ -4,6 +4,13 @@ API Routes — Async job-based image generation API + operator endpoints.
 External interface: job-id polling pattern
   POST /generate      → returns job_id immediately (non-blocking)
   GET  /jobs/{job_id} → poll for result
+
+
+  API Route'lar — Async job tabanlı görsel üretme API'si + operatör endpoint'leri
+
+Dış arayüz: job-id polling pattern kullanıyor
+POST /generate → hemen job_id döner (beklemez, bloke etmez)
+GET /jobs/{job_id} → sonucu sorgula (polling yap)
 """
 
 import asyncio
@@ -25,7 +32,7 @@ router = APIRouter()
 _jobs: dict[str, dict] = {}
 
 
-# ── Schemas ───────────────────────────────────────────────────────────────
+#Şemalar(veri yapılar)
 
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=2000)
@@ -54,7 +61,7 @@ class ProviderOverrideRequest(BaseModel):
     disabled: bool
 
 
-# ── Dependencies ──────────────────────────────────────────────────────────
+#Bağımlılıklar
 
 def get_routing_engine() -> RoutingEngine:
     from app.main import routing_engine
@@ -69,7 +76,7 @@ def get_event_store() -> EventStore:
     return event_store
 
 
-# ── Background generation task ────────────────────────────────────────────
+# ── Arka planda çalışan üretim görevi ────────────────────────────────────────────
 
 async def _run_generation(job_id: str, request: GenerateRequest, engine: RoutingEngine):
     _jobs[job_id] = {"status": "processing", "job_id": job_id}
@@ -98,7 +105,7 @@ async def _run_generation(job_id: str, request: GenerateRequest, engine: Routing
         }
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────
+# Endpointler
 
 @router.post("/generate", response_model=GenerateResponse)
 async def generate_image(
@@ -107,8 +114,8 @@ async def generate_image(
     engine: RoutingEngine = Depends(get_routing_engine),
 ):
     """
-    Submit an image generation request. Returns job_id immediately.
-    Poll GET /jobs/{job_id} for the result.
+    Görsel üretme isteği gönder. Hemen job_id döner.
+    Sonucu almak için GET /jobs/{job_id} adresini poll'la (sorgula).
     """
     import uuid
     job_id = str(uuid.uuid4())

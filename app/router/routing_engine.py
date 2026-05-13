@@ -1,24 +1,34 @@
 """
-Routing Engine — Primary selection and failover.
+Routing Engine (Yönlendirme Motoru) — Birincil seçim ve failover.
 
-Picks the best available provider for each request based on observed health,
-then falls back to the next available provider on failure.
+Her istek için, sağlayıcıların gözlemlenen sağlık durumlarına bakarak en uygun olanı seçer.
+Eğer seçilen sağlayıcı hata verirse, sıradaki uygun sağlayıcıya geçer.
 
-Routing priority:
-  1. Skip OPERATOR_DISABLED providers
-  2. Skip CIRCUIT_OPEN providers
-  3. Prefer HEALTHY over DEGRADED
-  4. Among equal-status providers, prefer lower avg latency
+Routing öncelik sırası:
 
-Failover trigger criteria:
-  - Any ProviderError with is_retryable=True
-  - ProviderRateLimitError (429)
-  - ProviderTimeoutError
-  - Unexpected exceptions
+OPERATOR_DISABLED (operatör tarafından devre dışı bırakılmış) sağlayıcıları atla
 
-NOT triggering failover:
-  - ProviderAuthError (is_retryable=False) — indicates misconfiguration, not transience
-  - ProviderError with is_retryable=False — client errors, won't improve on retry
+CIRCUIT_OPEN (devresi açılmış) sağlayıcıları atla
+
+HEALTHY (sağlıklı) olanları DEGRADED (bozuk) olanlara tercih et
+
+Durumları aynı olan sağlayıcılar arasında, ortalama gecikmesi daha düşük olanı tercih et
+
+Failover'ı tetikleyen durumlar:
+
+is_retryable=True olan herhangi bir ProviderError
+
+ProviderRateLimitError (429 hatası)
+
+ProviderTimeoutError (zaman aşımı)
+
+Beklenmeyen hatalar (exception'lar)
+
+Failover'ı tetiklemeyen durumlar:
+
+ProviderAuthError (is_retryable=False olur) — yanlış konfigürasyonu gösterir, geçici bir sorun değildir
+
+is_retryable=False olan ProviderError — client kaynaklı hatalardır, tekrar deneyince düzelmez
 """
 
 import logging
@@ -39,10 +49,9 @@ logger = logging.getLogger(__name__)
 
 class RoutingEngine:
     """
-    Selects the primary provider and handles failover transparently.
+    Birincil sağlayıcıyı seçer ve failover'ı çağrıyı yapan tarafa hissettirmeden yönetir.
 
-    The caller receives a GenerationResult regardless of which provider
-    actually served the request.
+    İsteği hangi sağlayıcının karşıladığı fark etmeksizin, çağrıyı yaran kişi bir GenerationResult alır.
     """
 
     def __init__(self, providers: list[BaseProvider], health_tracker: HealthTracker, event_store: EventStore):
@@ -57,9 +66,9 @@ class RoutingEngine:
 
     def _select_providers(self) -> list[str]:
         """
-        Returns providers sorted by priority: HEALTHY first, DEGRADED second,
-        within each group sorted by avg latency ascending.
-        Excludes CIRCUIT_OPEN and OPERATOR_DISABLED providers.
+        Sağlayıcıları öncelik sırasına göre döndürür: önce HEALTHY olanlar, sonra DEGRADED olanlar.
+        Her grup içinde ortalama gecikmeye göre artan sırada (en düşük gecikme önce) sıralanır.
+        CIRCUIT_OPEN ve OPERATOR_DISABLED olan sağlayıcıları hariç tutar.
         """
         healthy = []
         degraded = []
@@ -86,8 +95,8 @@ class RoutingEngine:
     async def generate(self, prompt: str, width: int = 1024, height: int = 1024,
                        num_images: int = 1, extra_params: Optional[dict] = None) -> GenerationResult:
         """
-        Execute generation with automatic failover.
-        Tries providers in priority order until one succeeds or all fail.
+        Otomatik failover ile üretim yapar.
+        Sağlayıcıları öncelik sırasına göre dener; biri başarılı olana veya hepsi başarısız olana kadar devam eder.
         """
         job_id = str(uuid.uuid4())
         request = GenerationRequest(
@@ -239,10 +248,10 @@ class RoutingEngine:
         )
 
     def get_primary_provider(self) -> Optional[str]:
-        """Returns the name of the current primary provider."""
+        """Mevcut birincil sağlayıcının adını döndürür.."""
         seq = self._select_providers()
         return seq[0] if seq else None
 
     def get_provider_order(self) -> list[str]:
-        """Returns the current provider priority order."""
+        """Mevcut sağlayıcı öncelik sırasını döndürür.."""
         return self._select_providers()

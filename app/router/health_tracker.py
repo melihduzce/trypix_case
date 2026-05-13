@@ -1,19 +1,25 @@
 """
-Health Tracker — Sliding Window Algorithm.
+Health Tracker (Sağlık Takipçisi) — Sliding Window (Kayan Pencere) Algoritması.
 
-Tracks per-provider health using a time-based sliding window.
-Each provider maintains a rolling log of outcomes (success/failure)
-over the last N seconds. Health score = success_rate within the window.
+Zaman tabanlı kayan pencere kullanarak her sağlayıcının sağlık durumunu takip eder.
+Her sağlayıcı, son X saniye içindeki çağrı sonuçlarını (başarılı/başarısız) tutar.
+Sağlık skoru = pencere içindeki başarı oranı.
 
-Algorithm choice rationale:
-- Sliding window is more responsive than simple counters (reacts to recent changes)
-- Simpler and more debuggable than exponential smoothing
-- Time-based (not count-based) so low-traffic providers don't stay healthy forever
+Neden bu algoritma seçildi?
 
-Thresholds (tunable via config):
-- DEGRADED: success_rate < 0.7 (last 60s)
-- CIRCUIT_OPEN: success_rate < 0.4 OR 3+ consecutive failures
-- Recovery: success_rate >= 0.8 for 30s → back to HEALTHY
+Kayan pencere, basit sayaca göre daha hızlı tepki verir (yeni gelişmelere anında uyum sağlar)
+
+Üstel düzleştirme (exponential smoothing) yöntemine göre daha basit ve hata ayıklaması daha kolaydır
+
+Sayı tabanlı değil, zaman tabanlı olduğu için az trafik alan sağlayıcılar sonsuza kadar sağlıklı görünmez
+
+Eşik Değerleri (ayarlanabilir):
+
+DEGRADED (bozuldu): başarı oranı < 0.7 (son 60 saniyede)
+
+CIRCUIT_OPEN (devre açık): başarı oranı < 0.4 VEYA 3+ ardışık hata
+
+Recovery (iyileşme): 30 saniye boyunca başarı oranı >= 0.8 → sağlıklı duruma döner
 """
 
 import time
@@ -95,10 +101,10 @@ class ProviderHealth:
 
 class HealthTracker:
     """
-    Thread-safe per-provider health tracker.
+    Thread-safe (iş parçacığı güvenli) sağlayıcı bazlı sağlık takipçisi.
 
-    Records outcomes and recomputes status after each observation.
-    Used by the routing engine to select the primary provider.
+    Her çağrı sonucunu kaydeder ve her gözlem sonrasında sağlık durumunu yeniden hesaplar.
+    Routing engine tarafından birincil sağlayıcıyı seçmek için kullanılır.
     """
 
     def __init__(self):
