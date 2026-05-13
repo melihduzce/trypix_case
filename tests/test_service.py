@@ -86,7 +86,7 @@ async def test_successful_primary_call():
     assert health.consecutive_failures == 0
     assert health.success_rate() == 1.0
 
-    print("✅ Test 1 passed: Successful primary call")
+    print(" Test 1 passed: Successful primary call")
 
 
 # ── Test 2: Primary Failure with Secondary Fallback ───────────────────────
@@ -118,7 +118,7 @@ async def test_primary_failure_fallback_to_secondary():
     openrouter_health = tracker.get_health("openrouter")
     assert openrouter_health.consecutive_failures == 0
 
-    print("✅ Test 2 passed: Primary failure → fallback to secondary")
+    print(" Test 2 passed: Primary failure → fallback to secondary")
 
 
 # ── Test 3: Health-Triggered Demotion ─────────────────────────────────────
@@ -154,7 +154,7 @@ async def test_health_triggered_demotion():
     )
     assert result.status == GenerationStatus.COMPLETED
 
-    print(f"✅ Test 3 passed: Health-triggered demotion (CIRCUIT_OPEN after {CONSECUTIVE_FAIL_LIMIT} failures)")
+    print(f" Test 3 passed: Health-triggered demotion (CIRCUIT_OPEN after {CONSECUTIVE_FAIL_LIMIT} failures)")
 
 
 # ── Test 4: Operator Override ─────────────────────────────────────────────
@@ -195,7 +195,7 @@ async def test_operator_override_takes_provider_out_of_rotation():
     available = engine.get_provider_order()
     assert "fal" in available, f"fal should be back in rotation, got: {available}"
 
-    print("✅ Test 4 passed: Operator override removes provider from rotation")
+    print(" Test 4 passed: Operator override removes provider from rotation")
 
 
 # ── Test 5: All Providers Unavailable ─────────────────────────────────────
@@ -225,7 +225,7 @@ async def test_all_providers_unavailable():
     assert result.provider_name == "none"
     assert result.error_message is not None
 
-    print("✅ Test 5 passed: All providers unavailable → graceful failure")
+    print(" Test 5 passed: All providers unavailable → graceful failure")
 
 
 # ── Test 6: Rate Limit Triggers Failover ──────────────────────────────────
@@ -252,7 +252,7 @@ async def test_rate_limit_triggers_failover():
     assert result.status == GenerationStatus.COMPLETED
     assert result.provider_name == "openrouter"
 
-    print("✅ Test 6 passed: Rate limit error triggers failover")
+    print(" Test 6 passed: Rate limit error triggers failover")
 
 
 # ── Test 7: Auth Error Does NOT Trigger Failover ──────────────────────────
@@ -280,7 +280,7 @@ async def test_auth_error_does_not_failover():
     assert result.status == GenerationStatus.FAILED
     assert "fal" in result.provider_name or "Auth error" in (result.error_message or "")
 
-    print("✅ Test 7 passed: Auth error does NOT trigger failover")
+    print(" Test 7 passed: Auth error does NOT trigger failover")
 
 
 # ── Test 8: Health Tracker Sliding Window ─────────────────────────────────
@@ -311,7 +311,7 @@ def test_health_tracker_sliding_window():
     # Success rate should be high (old failures outside window)
     assert tracker.get_status("fal") == ProviderStatus.HEALTHY
 
-    print("✅ Test 8 passed: Sliding window ignores old failures")
+    print("Test 8 passed: Sliding window ignores old failures")
 
 
 # ── Run all tests ──────────────────────────────────────────────────────────
