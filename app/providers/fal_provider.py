@@ -2,12 +2,9 @@
 FAL.ai Provider — Polling-based async pattern.
 
 Flow:
-  1. POST /fal-run/{model} → returns request_id immediately
-  2. GET /requests/{request_id}/status → poll until status == COMPLETED
-  3. GET /requests/{request_id} → fetch final result with image URLs
-
-Latency profile: 10–45s typical, up to 120s under load.
-Error semantics: 429 on rate limit, 5xx on server errors, timeout on hung jobs.
+  1. POST https://queue.fal.run/fal-ai/flux/schnell  → returns request_id + status_url + response_url
+  2. GET {status_url}   → poll until status == COMPLETED
+  3. GET {response_url} → fetch final result with image URLs
 """
 
 import asyncio
@@ -26,17 +23,10 @@ logger = logging.getLogger(__name__)
 
 FAL_QUEUE_BASE = "https://queue.fal.run"
 FAL_MODEL = "fal-ai/flux/schnell"
-POLL_INTERVAL_SECONDS = 2.0
+POLL_INTERVAL_SECONDS = 3.0
 
 
 class FalProvider(BaseProvider):
-    """
-    FAL.ai provider using the queue/polling pattern.
-
-    Submits a job to FAL's queue, then polls the status endpoint
-    until the job completes or timeout is reached.
-    """
-
     def __init__(self, api_key: str, timeout_seconds: float = 120.0, model: str = FAL_MODEL):
         super().__init__(name="fal", api_key=api_key, timeout_seconds=timeout_seconds)
         self.model = model
@@ -57,29 +47,29 @@ class FalProvider(BaseProvider):
         start_time = time.monotonic()
         client = self._get_client()
 
-        # Step 1: Submit job to FAL queue
+        # Step 1: Submit job
         try:
             submit_url = f"{FAL_QUEUE_BASE}/{self.model}"
             payload = {
                 "prompt": request.prompt,
-                "image_size": {
-                    "width": request.width,
-                    "height": request.height,
-                },
+                "image_size": {"width": request.width, "height": request.height},
                 "num_images": request.num_images,
                 **request.extra_params,
             }
-
-            logger.info(f"[fal] Submitting job for request_id={request.job_id}")
+            logger.info(f"[fal] Submitting job_id={request.job_id}")
             response = await client.post(submit_url, json=payload)
             self._raise_for_status(response)
 
             data = response.json()
             fal_request_id = data.get("request_id")
+            # Use URLs returned by FAL directly
+            status_url = data.get("status_url") or f"{FAL_QUEUE_BASE}/{self.model}/requests/{fal_request_id}/status"
+            response_url = data.get("response_url") or f"{FAL_QUEUE_BASE}/{self.model}/requests/{fal_request_id}"
+
             if not fal_request_id:
                 raise ProviderError("FAL did not return a request_id")
 
-            logger.info(f"[fal] Job submitted fal_request_id={fal_request_id}")
+            logger.info(f"[fal] Submitted fal_request_id={fal_request_id} status_url={status_url}")
 
         except httpx.TimeoutException:
             raise ProviderTimeoutError("FAL submission timed out")
@@ -88,16 +78,11 @@ class FalProvider(BaseProvider):
         except Exception as e:
             raise ProviderError(f"FAL submission failed: {e}")
 
-        # Step 2: Poll until complete or timeout
-        status_url = f"{FAL_QUEUE_BASE}/{self.model}/requests/{fal_request_id}/status"
-        result_url = f"{FAL_QUEUE_BASE}/{self.model}/requests/{fal_request_id}"
-
+        # Step 2: Poll status
         while True:
-            elapsed = (time.monotonic() - start_time) * 1000
-            if elapsed / 1000 > self.timeout_seconds:
-                raise ProviderTimeoutError(
-                    f"FAL job {fal_request_id} timed out after {self.timeout_seconds}s"
-                )
+            elapsed = time.monotonic() - start_time
+            if elapsed > self.timeout_seconds:
+                raise ProviderTimeoutError(f"FAL job {fal_request_id} timed out after {self.timeout_seconds}s")
 
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
@@ -106,13 +91,14 @@ class FalProvider(BaseProvider):
                 self._raise_for_status(status_response)
                 status_data = status_response.json()
                 status = status_data.get("status", "")
-
                 logger.debug(f"[fal] Poll fal_request_id={fal_request_id} status={status}")
 
                 if status == "COMPLETED":
                     break
                 elif status in ("FAILED", "CANCELLED"):
-                    error_msg = status_data.get("error", {}).get("message", "Unknown FAL error")
+                    error_msg = status_data.get("error", {})
+                    if isinstance(error_msg, dict):
+                        error_msg = error_msg.get("message", "FAL job failed")
                     raise ProviderError(f"FAL job failed: {error_msg}", is_retryable=True)
                 # IN_QUEUE or IN_PROGRESS → keep polling
 
@@ -126,7 +112,7 @@ class FalProvider(BaseProvider):
 
         # Step 3: Fetch result
         try:
-            result_response = await client.get(result_url)
+            result_response = await client.get(response_url)
             self._raise_for_status(result_response)
             result_data = result_response.json()
 
@@ -137,7 +123,7 @@ class FalProvider(BaseProvider):
                 raise ProviderError("FAL returned no image URLs")
 
             latency_ms = (time.monotonic() - start_time) * 1000
-            logger.info(f"[fal] Job completed fal_request_id={fal_request_id} latency={latency_ms:.0f}ms")
+            logger.info(f"[fal] Completed fal_request_id={fal_request_id} latency={latency_ms:.0f}ms")
 
             return GenerationResult(
                 job_id=request.job_id,
@@ -147,7 +133,6 @@ class FalProvider(BaseProvider):
                 latency_ms=latency_ms,
                 provider_job_id=fal_request_id,
             )
-
         except ProviderError:
             raise
         except Exception as e:
@@ -156,12 +141,7 @@ class FalProvider(BaseProvider):
     async def health_check(self) -> bool:
         try:
             client = self._get_client()
-            # Lightweight: just check if queue endpoint responds
-            response = await client.get(
-                f"{FAL_QUEUE_BASE}/{self.model}",
-                timeout=5.0
-            )
-            # 405 Method Not Allowed means the endpoint exists (we sent GET to a POST endpoint)
+            response = await client.get(f"{FAL_QUEUE_BASE}/{self.model}", timeout=5.0)
             return response.status_code in (200, 405, 422)
         except Exception as e:
             logger.warning(f"[fal] Health check failed: {e}")
@@ -173,17 +153,9 @@ class FalProvider(BaseProvider):
         elif response.status_code in (401, 403):
             raise ProviderAuthError(f"FAL auth failed: {response.status_code}")
         elif response.status_code >= 500:
-            raise ProviderError(
-                f"FAL server error: {response.status_code}",
-                is_retryable=True,
-                status_code=response.status_code,
-            )
+            raise ProviderError(f"FAL server error: {response.status_code}", is_retryable=True, status_code=response.status_code)
         elif response.status_code >= 400:
-            raise ProviderError(
-                f"FAL client error: {response.status_code} — {response.text}",
-                is_retryable=True,
-                status_code=response.status_code,
-            )
+            raise ProviderError(f"FAL client error: {response.status_code} — {response.text[:200]}", is_retryable=True, status_code=response.status_code)
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:

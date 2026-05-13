@@ -1,13 +1,8 @@
 """
-OpenRouter Provider — Synchronous pattern via Chat Completions.
-
-OpenRouter image generation uses /api/v1/chat/completions with modalities=["image"].
-The response contains base64-encoded images in the assistant message.
+OpenRouter Provider — Synchronous via Chat Completions with image modality.
 
 Flow:
-  POST /api/v1/chat/completions → blocks → returns base64 image in response
-
-Latency: 5–30s typical.
+  POST /api/v1/chat/completions with modalities=["image","text"] → returns base64 image
 """
 
 import time
@@ -24,14 +19,10 @@ from app.providers.base import (
 logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-OPENROUTER_IMAGE_MODEL = "google/gemini-2.0-flash-exp:free"
+OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image-preview"
 
 
 class OpenRouterProvider(BaseProvider):
-    """
-    OpenRouter provider — synchronous via chat completions with image modality.
-    """
-
     def __init__(self, api_key: str, timeout_seconds: float = 120.0,
                  model: str = OPENROUTER_IMAGE_MODEL,
                  site_url: str = "https://trypix.ai", site_name: str = "TRYPIX"):
@@ -60,13 +51,8 @@ class OpenRouterProvider(BaseProvider):
 
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": request.prompt,
-                }
-            ],
-            "modalities": ["image"],
+            "messages": [{"role": "user", "content": request.prompt}],
+            "modalities": ["image", "text"],
         }
 
         logger.info(f"[openrouter] Submitting job_id={request.job_id} model={self.model}")
@@ -74,24 +60,17 @@ class OpenRouterProvider(BaseProvider):
         try:
             response = await client.post(f"{OPENROUTER_BASE}/chat/completions", json=payload)
             self._raise_for_status(response)
-
             data = response.json()
-            image_urls = []
 
-            # Extract images from response
-            choices = data.get("choices", [])
-            for choice in choices:
+            image_urls = []
+            for choice in data.get("choices", []):
                 msg = choice.get("message", {})
-                # Images field in message
-                images = msg.get("images", [])
-                for img in images:
-                    if isinstance(img, str):
-                        image_urls.append(img)
-                    elif isinstance(img, dict):
-                        url = img.get("url") or img.get("data")
-                        if url:
-                            image_urls.append(url)
-                # Also check content for image parts
+                # images field
+                for img in msg.get("images", []):
+                    url = img if isinstance(img, str) else img.get("url") or img.get("data")
+                    if url:
+                        image_urls.append(url)
+                # content list parts
                 content = msg.get("content", "")
                 if isinstance(content, list):
                     for part in content:
@@ -101,8 +80,7 @@ class OpenRouterProvider(BaseProvider):
                                 image_urls.append(url)
 
             if not image_urls:
-                # Log full response for debugging
-                logger.error(f"[openrouter] No images in response: {data}")
+                logger.error(f"[openrouter] No images in response: {str(data)[:500]}")
                 raise ProviderError("OpenRouter returned no images", is_retryable=True)
 
             latency_ms = (time.monotonic() - start_time) * 1000
