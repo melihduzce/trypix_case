@@ -19,7 +19,7 @@ from app.providers.base import (
 logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image-preview"
+OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 
 
 class OpenRouterProvider(BaseProvider):
