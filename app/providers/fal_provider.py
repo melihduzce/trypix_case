@@ -89,8 +89,8 @@ class FalProvider(BaseProvider):
             raise ProviderError(f"FAL submission failed: {e}")
 
         # Step 2: Poll until complete or timeout
-        status_url = f"{FAL_QUEUE_BASE}/{self.model}/requests/{fal_request_id}/status"
-        result_url = f"{FAL_QUEUE_BASE}/{self.model}/requests/{fal_request_id}"
+        status_url = f"https://queue.fal.run/requests/{fal_request_id}/status"
+        result_url = f"https://queue.fal.run/requests/{fal_request_id}"
 
         while True:
             elapsed = (time.monotonic() - start_time) * 1000
@@ -181,7 +181,7 @@ class FalProvider(BaseProvider):
         elif response.status_code >= 400:
             raise ProviderError(
                 f"FAL client error: {response.status_code} — {response.text}",
-                is_retryable=False,
+                is_retryable=True,
                 status_code=response.status_code,
             )
 
