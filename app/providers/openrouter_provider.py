@@ -1,18 +1,13 @@
 """
-OpenRouter Provider — Synchronous pattern.
+OpenRouter Provider — Synchronous pattern via Chat Completions.
 
-OpenRouter routes to various image generation models (Stable Diffusion, DALL-E, etc.)
-via a single unified endpoint. The call is synchronous: POST → wait → get result.
+OpenRouter image generation uses /api/v1/chat/completions with modalities=["image"].
+The response contains base64-encoded images in the assistant message.
 
 Flow:
-  1. POST /api/v1/chat/completions (with image generation model) → waits and returns result
-     OR
-  POST /api/v1/generation → direct image generation endpoint
+  POST /api/v1/chat/completions → blocks → returns base64 image in response
 
-We use the images generation endpoint for models that support it.
-
-Latency profile: 5–30s typical depending on model and load.
-Error semantics: 429 on rate limit, 402 on credit exhaustion, 5xx on server errors.
+Latency: 5–30s typical.
 """
 
 import time
@@ -29,26 +24,17 @@ from app.providers.base import (
 logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-# Use a fast, affordable image model available on OpenRouter
-OPENROUTER_IMAGE_MODEL = "black-forest-labs/flux-1.1-pro"
+OPENROUTER_IMAGE_MODEL = "google/gemini-2.0-flash-exp:free"
 
 
 class OpenRouterProvider(BaseProvider):
     """
-    OpenRouter provider using synchronous request pattern.
-
-    Sends a single POST request and awaits the response directly.
-    No polling or webhook needed — OpenRouter blocks until generation completes.
+    OpenRouter provider — synchronous via chat completions with image modality.
     """
 
-    def __init__(
-        self,
-        api_key: str,
-        timeout_seconds: float = 120.0,
-        model: str = OPENROUTER_IMAGE_MODEL,
-        site_url: str = "https://trypix.ai",
-        site_name: str = "TRYPIX",
-    ):
+    def __init__(self, api_key: str, timeout_seconds: float = 120.0,
+                 model: str = OPENROUTER_IMAGE_MODEL,
+                 site_url: str = "https://trypix.ai", site_name: str = "TRYPIX"):
         super().__init__(name="openrouter", api_key=api_key, timeout_seconds=timeout_seconds)
         self.model = model
         self.site_url = site_url
@@ -74,38 +60,53 @@ class OpenRouterProvider(BaseProvider):
 
         payload = {
             "model": self.model,
-            "prompt": request.prompt,
-            "n": request.num_images,
-            "size": f"{request.width}x{request.height}",
-            **request.extra_params,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": request.prompt,
+                }
+            ],
+            "modalities": ["image"],
         }
 
-        logger.info(f"[openrouter] Submitting synchronous request job_id={request.job_id} model={self.model}")
+        logger.info(f"[openrouter] Submitting job_id={request.job_id} model={self.model}")
 
         try:
-            response = await client.post(
-                f"{OPENROUTER_BASE}/images/generations",
-                json=payload,
-            )
+            response = await client.post(f"{OPENROUTER_BASE}/chat/completions", json=payload)
             self._raise_for_status(response)
 
             data = response.json()
-            images = data.get("data", [])
             image_urls = []
 
-            for img in images:
-                url = img.get("url") or img.get("b64_json")
-                if url:
-                    image_urls.append(url)
+            # Extract images from response
+            choices = data.get("choices", [])
+            for choice in choices:
+                msg = choice.get("message", {})
+                # Images field in message
+                images = msg.get("images", [])
+                for img in images:
+                    if isinstance(img, str):
+                        image_urls.append(img)
+                    elif isinstance(img, dict):
+                        url = img.get("url") or img.get("data")
+                        if url:
+                            image_urls.append(url)
+                # Also check content for image parts
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "image_url":
+                            url = part.get("image_url", {}).get("url")
+                            if url:
+                                image_urls.append(url)
 
             if not image_urls:
-                raise ProviderError("OpenRouter returned no image URLs")
+                # Log full response for debugging
+                logger.error(f"[openrouter] No images in response: {data}")
+                raise ProviderError("OpenRouter returned no images", is_retryable=True)
 
             latency_ms = (time.monotonic() - start_time) * 1000
-            logger.info(
-                f"[openrouter] Request completed job_id={request.job_id} "
-                f"latency={latency_ms:.0f}ms"
-            )
+            logger.info(f"[openrouter] Done job_id={request.job_id} latency={latency_ms:.0f}ms")
 
             return GenerationResult(
                 job_id=request.job_id,
@@ -117,9 +118,7 @@ class OpenRouterProvider(BaseProvider):
             )
 
         except httpx.TimeoutException:
-            raise ProviderTimeoutError(
-                f"OpenRouter timed out after {self.timeout_seconds}s"
-            )
+            raise ProviderTimeoutError(f"OpenRouter timed out after {self.timeout_seconds}s")
         except ProviderError:
             raise
         except Exception as e:
@@ -128,10 +127,7 @@ class OpenRouterProvider(BaseProvider):
     async def health_check(self) -> bool:
         try:
             client = self._get_client()
-            response = await client.get(
-                f"{OPENROUTER_BASE}/models",
-                timeout=5.0,
-            )
+            response = await client.get(f"{OPENROUTER_BASE}/models", timeout=5.0)
             return response.status_code == 200
         except Exception as e:
             logger.warning(f"[openrouter] Health check failed: {e}")
@@ -141,29 +137,17 @@ class OpenRouterProvider(BaseProvider):
         if response.status_code == 429:
             raise ProviderRateLimitError("OpenRouter rate limit exceeded")
         elif response.status_code == 402:
-            raise ProviderError(
-                "OpenRouter credit exhausted",
-                is_retryable=False,
-                status_code=402,
-            )
+            raise ProviderError("OpenRouter credit exhausted", is_retryable=False, status_code=402)
         elif response.status_code in (401, 403):
             raise ProviderAuthError(f"OpenRouter auth failed: {response.status_code}")
         elif response.status_code >= 500:
-            raise ProviderError(
-                f"OpenRouter server error: {response.status_code}",
-                is_retryable=True,
-                status_code=response.status_code,
-            )
+            raise ProviderError(f"OpenRouter server error: {response.status_code}", is_retryable=True, status_code=response.status_code)
         elif response.status_code >= 400:
             try:
-                detail = response.json().get("error", {}).get("message", response.text)
+                detail = response.json().get("error", {}).get("message", response.text[:200])
             except Exception:
-                detail = response.text
-            raise ProviderError(
-                f"OpenRouter client error {response.status_code}: {detail}",
-                is_retryable=False,
-                status_code=response.status_code,
-            )
+                detail = response.text[:200]
+            raise ProviderError(f"OpenRouter error {response.status_code}: {detail}", is_retryable=True, status_code=response.status_code)
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
