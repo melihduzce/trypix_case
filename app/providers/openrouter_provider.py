@@ -67,9 +67,15 @@ class OpenRouterProvider(BaseProvider):
                 msg = choice.get("message", {})
                 # images field
                 for img in msg.get("images", []):
-                    url = img if isinstance(img, str) else img.get("url") or img.get("data")
-                    if url:
-                        image_urls.append(url)
+                    if isinstance(img, str):
+                        image_urls.append(img)
+                    elif isinstance(img, dict):
+                        if img.get("type") == "image_url":
+                            url = img.get("image_url", {}).get("url")
+                        else:
+                            url = img.get("url") or img.get("data")
+                        if url:
+                            image_urls.append(url)
                 # content list parts
                 content = msg.get("content", "")
                 if isinstance(content, list):
