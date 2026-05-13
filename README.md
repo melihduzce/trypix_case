@@ -4,9 +4,9 @@ A production-grade backend service that fronts multiple AI image generation prov
 
 ## Live URLs
 
-- **Backend API**: `https://trypix-backend.onrender.com`
+- **Backend API**: `https://trypix-case-1.onrender.com`
 - **Operator Dashboard**: `https://trypix-dashboard.onrender.com`
-- **API Docs**: `https://trypix-backend.onrender.com/docs`
+- **API Docs**: `https://trypix-case-1.onrender.com/docs`
 
 ---
 
@@ -20,12 +20,14 @@ class BaseProvider(ABC):
     async def health_check(self) -> bool: ...
 ```
 
-Each provider encapsulates its own async pattern internally. The routing engine, failover logic, and health tracker **only interact with `BaseProvider`** — they have no knowledge of how a provider works internally. Adding a third provider requires only:
+Each provider encapsulates its own async pattern internally. The routing engine, failover logic, and health tracker **only interact with `BaseProvider`** — they have no knowledge of how a provider works internally.
+
+Adding a third provider requires only:
 1. Creating a new file in `app/providers/`
 2. Implementing `generate()` and `health_check()`
 3. Registering it in `app/main.py`
 
-No changes to routing, failover, or health logic.
+**No changes** to routing, failover, or health logic.
 
 ---
 
@@ -34,21 +36,45 @@ No changes to routing, failover, or health logic.
 ### FAL.ai — Polling Pattern
 **File:** `app/providers/fal_provider.py`
 
-1. `POST /fal-run/{model}` → returns `request_id` immediately
-2. `GET /requests/{request_id}/status` → poll every 2s until `COMPLETED`
-3. `GET /requests/{request_id}` → fetch final image URLs
+FAL uses an asynchronous queue model. The caller never blocks on the generation itself:
 
-Latency: 10–45s typical. The polling loop runs inside `generate()`, making it invisible to the caller.
+1. `POST https://queue.fal.run/fal-ai/flux/schnell` → returns `request_id`, `status_url`, `response_url` immediately
+2. `GET {status_url}` → poll every 3 seconds until `status == COMPLETED`
+3. `GET {response_url}` → fetch final image URLs
+
+The submit response includes convenience URLs (`status_url`, `response_url`) which are used directly rather than constructing them manually — this makes the implementation resilient to FAL changing their URL structure.
+
+Latency: 10–45s typical.
 
 ### OpenRouter — Synchronous Pattern
 **File:** `app/providers/openrouter_provider.py`
 
-1. `POST /api/v1/images/generations` → blocks until generation completes, returns image URLs directly
+OpenRouter image generation uses the Chat Completions endpoint with `modalities: ["image", "text"]`. The HTTP call blocks until generation completes — no polling or webhook needed:
 
-Latency: 5–30s typical. Simplest pattern — single HTTP call with a long timeout.
+1. `POST https://openrouter.ai/api/v1/chat/completions` with `modalities: ["image", "text"]` → blocks → returns base64-encoded image in `choices[0].message.images`
+
+Model used: `google/gemini-2.5-flash-image` (Nano Banana, GA release).
+
+Note: OpenRouter does **not** use the standard `/v1/images/generations` endpoint. Image output is embedded in the chat completion response as `message.images[].image_url.url`.
+
+Latency: 5–30s typical.
 
 ### How the abstraction unifies them
-Both patterns resolve to the same return type (`GenerationResult`) with the same fields. The caller receives a completed result regardless of how the provider handled the async work internally.
+
+Both patterns resolve to the same `GenerationResult` type. From the routing engine's perspective, calling `await provider.generate(request)` always returns a completed result — whether that required 12 polling cycles internally or a single blocking HTTP call is invisible to the caller.
+
+---
+
+## External Interface Contract
+
+The service exposes a **job-id polling** interface to callers:
+
+```
+POST /api/v1/generate       → { job_id, status: "pending" }   (returns immediately)
+GET  /api/v1/jobs/{job_id}  → { status, provider_used, image_urls, latency_ms }
+```
+
+This design avoids HTTP timeout issues on long-running generations (FAL can take 45s+) while remaining simple for callers to implement. The caller polls until `status == "completed"` or `"failed"`.
 
 ---
 
@@ -56,12 +82,12 @@ Both patterns resolve to the same return type (`GenerationResult`) with the same
 
 | Trigger | Action | Rationale |
 |---------|--------|-----------|
-| Any `ProviderError` with `is_retryable=True` | Failover to next provider | Transient errors may succeed elsewhere |
-| `ProviderRateLimitError` (HTTP 429) | Failover | Rate limits are per-provider, not global |
-| `ProviderTimeoutError` | Failover | Hung providers should not block the user |
-| Unexpected exceptions | Failover | Defensive — unknown errors treated as transient |
-| `ProviderAuthError` (HTTP 401/403) | **No failover, fail immediately** | Auth errors indicate misconfiguration, not transience — retrying wastes time and budget |
-| `ProviderError` with `is_retryable=False` | **No failover** | Client errors (4xx) won't improve on retry |
+| `ProviderRateLimitError` (HTTP 429) | Failover to next provider | Rate limits are per-provider; another provider may have capacity |
+| `ProviderTimeoutError` | Failover | A hung provider should not block the user indefinitely |
+| `ProviderError` with `is_retryable=True` | Failover | Transient server errors (5xx, unexpected responses) may succeed elsewhere |
+| Unexpected exceptions | Failover | Defensive — unknown errors are treated as transient |
+| `ProviderAuthError` (HTTP 401/403) | **Fail immediately, no failover** | Auth errors indicate misconfiguration, not transience. Retrying on another provider would mask the root cause and waste budget |
+| `ProviderError` with `is_retryable=False` | **Fail immediately, no failover** | Client errors (e.g. malformed request) will not improve by retrying elsewhere |
 
 ---
 
@@ -72,99 +98,88 @@ Both patterns resolve to the same return type (`GenerationResult`) with the same
 **Implementation:** `app/router/health_tracker.py`
 
 ```
-success_rate = successful_outcomes / total_outcomes in last 60s
+success_rate = successful_outcomes / total_outcomes  (within last 60 seconds)
 ```
 
 ### Thresholds
 
-| Threshold | Value | Rationale |
+| Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| `DEGRADED` | success_rate < 0.70 | Provider is struggling but still usable as fallback |
-| `CIRCUIT_OPEN` | success_rate < 0.40 | Provider is failing more than half the time — skip it |
-| Consecutive failure limit | 3 | Immediate circuit open without waiting for the window to fill — catches sudden outages |
-| `RECOVERY_THRESHOLD` | success_rate ≥ 0.80 over 30s | Requires sustained recovery before trusting the provider again (avoids flapping) |
-| `MIN_OBSERVATIONS` | 3 | Don't penalize providers with very few data points |
-
-### Why sliding window over alternatives
-- **vs. simple counters**: Counters accumulate state forever. A provider that had 100 failures an hour ago but is healthy now would still look bad with counters.
-- **vs. exponential smoothing (EMA)**: EMA is harder to reason about when debugging. The sliding window is transparent: "70% of calls in the last 60 seconds succeeded."
-- **vs. count-based windows**: A count-based window (last N requests) doesn't decay naturally with time. A provider that has had no traffic for 10 minutes could have a stale health score.
+| Window size | 60s | Long enough to smooth noise, short enough to react to outages within a minute |
+| `DEGRADED` threshold | success_rate < 0.70 | Provider is struggling but still usable as a last-resort fallback |
+| `CIRCUIT_OPEN` threshold | success_rate < 0.40 | Failing more than half the time — skip entirely |
+| Consecutive failure limit | 3 | Immediate circuit open without waiting for the window to fill. Catches sudden outages that would otherwise take ~60s to register |
+| Recovery threshold | success_rate ≥ 0.80 over 30s | Requires *sustained* recovery before trusting the provider again — prevents flapping between CIRCUIT_OPEN and HEALTHY |
+| Min observations | 3 | Avoid penalising providers with very few data points (e.g. just started receiving traffic) |
 
 ### Routing priority
-1. `OPERATOR_DISABLED` → skip
-2. `CIRCUIT_OPEN` → skip
-3. `HEALTHY` → preferred
-4. `DEGRADED` → used as fallback
-5. Within each tier, sort by `avg_latency_ms` ascending (prefer faster providers)
+
+1. Skip `OPERATOR_DISABLED` and `CIRCUIT_OPEN` providers
+2. `HEALTHY` providers first
+3. `DEGRADED` providers as fallback
+4. Within each tier: sort by `avg_latency_ms` ascending (prefer faster providers)
+
+### Why sliding window over alternatives
+
+- **vs. simple counters**: Counters accumulate state forever. A provider that had 100 failures an hour ago but recovered would still look bad.
+- **vs. exponential smoothing (EMA)**: EMA is harder to reason about when debugging. The sliding window is transparent: "70% of calls in the last 60 seconds succeeded."
+- **vs. count-based windows**: A count-based window (last N requests) doesn't decay naturally with time. A provider with no traffic for 10 minutes could have a stale health score.
 
 ---
 
 ## Real vs. Mocked Providers
 
-**Both providers are real.** TRYPIX was provided API tokens for FAL.ai and OpenRouter.ai, so there is no reason to mock.
+**Both providers are real.** TRYPIX provided API tokens for FAL.ai ($10 budget) and OpenRouter ($5 budget), so there is no reason to mock.
 
-Using real APIs means:
-- The async patterns are genuinely different (polling vs. synchronous)
-- Latency profiles reflect real-world conditions
-- Error semantics (rate limits, server errors) are authentic
-- The failover logic is exercised against real provider behavior
+Using real APIs provides stronger guarantees than mocks:
 
-If an API token runs out of credits during testing, the circuit breaker will open on that provider and the service will route all traffic to the other — which is exactly the behavior the health-tracking system is designed to produce.
+- **Async patterns are genuinely different**: FAL's polling and OpenRouter's synchronous pattern behave differently under real network conditions — latency variance, partial failures, and rate limits cannot be fully replicated by mocks.
+- **Error semantics are authentic**: Real 429s, real timeouts, and real malformed responses exercise the failover and health-tracking logic in ways that matter in production.
+- **The circuit breaker has been exercised in production**: During development, FAL's polling endpoint returned 405s (incorrect URL construction) which triggered real failovers to OpenRouter, validating the end-to-end failover path.
 
----
-
-## Tests
-
-```bash
-pip install -r requirements.txt
-pytest tests/ -v
-```
-
-### Test scenarios covered
-
-| Test | Scenario |
-|------|----------|
-| `test_successful_primary_call` | Happy path — primary provider succeeds |
-| `test_primary_failure_fallback_to_secondary` | Primary throws retryable error → routes to secondary |
-| `test_health_triggered_demotion` | 3 consecutive failures → CIRCUIT_OPEN → skipped by router |
-| `test_operator_override_takes_provider_out_of_rotation` | Operator disables provider → OPERATOR_DISABLED → not routed |
-| `test_all_providers_unavailable` | All circuits open → graceful FAILED result, no exception |
-| `test_rate_limit_triggers_failover` | 429 from primary → failover |
-| `test_auth_error_does_not_failover` | 401 from primary → immediate failure, no failover |
-| `test_health_tracker_sliding_window` | Old failures outside window don't affect current health |
+If the API budget runs out during evaluation, the circuit breaker will open on the affected provider and route all traffic to the other — which is exactly the health-tracking behaviour the system is designed to demonstrate.
 
 ---
 
 ## Running Locally
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Set environment variables
 cp .env.example .env
 # Edit .env with your API keys
-
-# Run backend
 uvicorn app.main:app --reload
 
-# Run dashboard (separate terminal)
-cd dashboard
-npm install
-npm run dev
+# Dashboard
+cd dashboard && npm install && npm run dev
 ```
+
+## Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+| Test | Scenario |
+|------|----------|
+| `test_successful_primary_call` | Happy path — primary provider succeeds |
+| `test_primary_failure_fallback_to_secondary` | Primary throws retryable error → routes to secondary |
+| `test_health_triggered_demotion` | 3 consecutive failures → CIRCUIT_OPEN → skipped by router |
+| `test_operator_override_takes_provider_out_of_rotation` | Operator disables provider → not routed |
+| `test_all_providers_unavailable` | All circuits open → graceful FAILED result |
+| `test_rate_limit_triggers_failover` | 429 from primary → failover |
+| `test_auth_error_does_not_failover` | 401 from primary → immediate failure, no failover |
+| `test_health_tracker_sliding_window` | Old failures outside window don't affect current health |
 
 ---
 
 ## Deployment (Render)
 
-1. Push repository to GitHub
-2. Create a **Web Service** on Render pointing to this repo
-3. Set environment variables: `FAL_API_KEY`, `OPENROUTER_API_KEY`
-4. Create a **Static Site** on Render pointing to the `dashboard/` directory
-   - Build command: `npm install && npm run build`
-   - Publish directory: `dist`
-   - Set `VITE_API_URL` to the backend URL
+Backend and dashboard are both deployed on Render.
+
+- **Backend**: Web Service, Python, `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Dashboard**: Static Site, `dashboard/` directory, `npm install && npm run build`
+
+Environment variables required: `FAL_API_KEY`, `OPENROUTER_API_KEY`, `DB_PATH`
 
 ---
 
@@ -172,23 +187,23 @@ npm run dev
 
 ### Observation persistence across worker restarts
 
-Currently, health state lives in memory (`HealthTracker`). On restart, all providers start at `HEALTHY`. In production:
+Currently health state lives in memory. On restart, all providers start at `HEALTHY`. In production:
 
-- Persist `generation_events` to the database (already done via `EventStore`)
-- On startup, replay the last 60s of events from the DB to warm the health tracker
-- This gives continuity across restarts without complex distributed state
+- `generation_events` are already persisted to SQLite via `EventStore`
+- On startup, replay the last 60 seconds of events from the DB to warm the `HealthTracker`
+- This gives continuity across restarts without distributed state
 
 ### Cross-instance health sharing in multi-worker deployment
 
-With multiple workers (e.g. Gunicorn with 4 workers), each worker has its own `HealthTracker` instance. A failure seen by worker 1 doesn't affect worker 2's routing decision.
+With multiple workers, each has its own `HealthTracker`. A failure seen by worker 1 doesn't affect worker 2.
 
 Solutions in increasing complexity:
-1. **DB-based health**: Compute health scores from `generation_events` at query time (already possible with the current schema). Workers share the DB, so all routing decisions are based on the same data. Adds ~1ms per request for the health query.
-2. **Redis pub/sub**: Workers publish failure events to a Redis channel; all workers subscribe and update their in-memory state. Low latency, eventually consistent.
-3. **Shared memory (single host)**: If all workers run on the same machine, use a shared memory segment (e.g. `multiprocessing.Manager`) for the health state.
+1. **DB-based health** (simplest): Compute health scores from `generation_events` at query time. Workers share the DB so routing is consistent. Adds ~1ms per request.
+2. **Redis pub/sub**: Workers publish failure events; all workers subscribe and update in-memory state. Low latency, eventually consistent.
+3. **Shared memory** (single host): Use `multiprocessing.Manager` for shared health state across workers on the same machine.
 
 ### Sharding by user ID or flow type
 
-If the service is sharded by user ID, each shard needs its own health state — a provider that is rate-limited for user group A may be healthy for user group B (if the rate limit is per-API-key and different keys are used per shard).
+If sharded by user ID, each shard may use different API keys — a rate limit on one shard's key doesn't affect others. Health state should be per-shard, not global.
 
-If sharded by flow type (e.g. "portrait generation" vs "landscape generation"), different flows may have different provider preferences — e.g. one flow always prefers FAL for its style, regardless of latency. This would require per-flow provider priority lists in `RoutingEngine`, with shared health state but independent routing decisions.
+If sharded by flow type, different flows may have different provider preferences (e.g. one flow always prefers FAL for style consistency). This requires per-flow provider priority lists in `RoutingEngine`, with shared health state but independent routing decisions per flow type.
