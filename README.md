@@ -31,6 +31,31 @@ Adding a third provider requires only:
 
 ---
 
+## Provider & Async Pattern Choices
+
+### Why FAL + OpenRouter instead of FAL + Replicate?
+
+The case brief suggests FAL (polling) and Replicate (webhook) as examples. We used FAL + OpenRouter for two reasons:
+
+1. **Token constraint**: The API tokens provided were for FAL.ai and OpenRouter. No Replicate token was provided, and using a mocked Replicate would be less valuable than a real OpenRouter integration that exercises genuine production error semantics.
+
+2. **Three distinct async patterns are present**: The service demonstrates three meaningfully different async patterns — FAL's server-side polling, OpenRouter's synchronous blocking call, and the service's own job-id polling interface exposed to callers. This is richer than a simple polling + webhook pairing.
+
+### How the abstraction accommodates a webhook-based provider
+
+Adding a webhook provider (e.g. Replicate) would require:
+1. A new `ReplicateProvider` file implementing `BaseProvider`
+2. A webhook receiver endpoint (`POST /webhooks/replicate`) correlating incoming callbacks to in-flight requests using a shared `asyncio.Event` keyed by `request_id`
+3. `generate()` submits the job, then `await`s the event until the webhook fires or timeout is reached
+
+**No changes** to the routing engine, health tracker, or failover logic — the abstraction handles this cleanly. This is precisely the value of the `BaseProvider` interface.
+
+### On synchronous vs. webhook patterns
+
+Both synchronous (OpenRouter) and webhook (Replicate) are "push" models where the service waits for the provider to signal completion. The difference is *who holds the connection open*: synchronous keeps the HTTP connection alive; webhook closes it immediately and receives a callback. The abstraction layer hides this distinction — both resolve to the same `GenerationResult`.
+
+---
+
 ## Providers & Async Patterns
 
 ### FAL.ai — Polling Pattern

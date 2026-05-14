@@ -17,7 +17,7 @@ from app.router.routing_engine import RoutingEngine
 from app.db.event_store import EventStore
 from app.api.routes import router
 
-# ── Logging Setup ─────────────────────────────────────────────────────────
+#Logging Setup
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Global singletons (injected into routes via Depends) ──────────────────
+#Global singletons (injected into routes via Depends)
 health_tracker: HealthTracker = None
 routing_engine: RoutingEngine = None
 event_store: EventStore = None
@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("[startup] Initializing TRYPIX service...")
 
-    # Load API keys from environment
+    # API anahtarlarını ortam değişkenlerinden (environment) yüklüyoruz
     fal_api_key = os.environ.get("FAL_API_KEY", "")
     openrouter_api_key = os.environ.get("OPENROUTER_API_KEY", "")
     db_path = os.environ.get("DB_PATH", "trypix.db")
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
     if not openrouter_api_key:
         logger.warning("[startup] OPENROUTER_API_KEY not set — OpenRouter provider will fail auth")
 
-    # Initialize providers
+    # Sağlayıcıları başlatıyoruz
     providers = [
         FalProvider(
             api_key=fal_api_key,
@@ -60,7 +60,11 @@ async def lifespan(app: FastAPI):
         ),
     ]
 
-    # Initialize core components
+    # Ana bileşenleri başlatıyoruz
+    """
+    Başlangıçta gerekli bileşenler kurulur,sağlayıcılar ve birincil sağlayıcı loglanır,
+    servis hazır hale gelir. 
+    """
     event_store = EventStore(db_path=db_path)
     health_tracker = HealthTracker()
     routing_engine = RoutingEngine(
@@ -75,7 +79,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown: close HTTP clients
+    # Kapanış (Shutdown): HTTP istemcilerini kapatıyoruz
     logger.info("[shutdown] Closing provider connections...")
     for provider in providers:
         if hasattr(provider, "close"):
